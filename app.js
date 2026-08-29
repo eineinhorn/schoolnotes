@@ -31,7 +31,7 @@
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) return JSON.parse(raw);
     } catch (e) { /* Speicher kaputt -> neu anfangen */ }
-    return { folders: [], notebooks: [], pages: {}, ui: { activeNotebookId: null, activePageId: null, collapsedFolders: [] } };
+    return { folders: [], notebooks: [], pages: {}, ui: { activeNotebookId: null, activePageId: null, collapsedFolders: [], pencilOnly: true } };
   }
 
   let saveTimer = null;
@@ -59,6 +59,7 @@
   }
 
   function ensureDefaultData() {
+    if (data.ui.pencilOnly === undefined) data.ui.pencilOnly = true;
     if (!data.notebooks.length) {
       const nb = newNotebook('Erstes Notizbuch', null);
       data.ui.activeNotebookId = nb.id;
@@ -75,8 +76,10 @@
   function findFolder(id) { return data.folders.find(f => f.id === id); }
 
   // ---------- DOM ----------
-  const canvas = document.getElementById('board');
+  const canvas = document.getElementById('board');           // Tinten-Ebene (transparent)
   const ctx = canvas.getContext('2d');
+  const bgCanvas = document.getElementById('bgBoard');        // Seitenmuster-Ebene (darunter, vom Radiergummi unberührt)
+  const bgCtx = bgCanvas.getContext('2d');
   const status = document.getElementById('status');
   const emptyState = document.getElementById('emptyState');
   const notebookTitle = document.getElementById('notebookTitle');
@@ -101,6 +104,9 @@
   const folderTree = document.getElementById('folderTree');
   const newFolderBtn = document.getElementById('newFolderBtn');
   const newNotebookBtn = document.getElementById('newNotebookBtn');
+  const pencilOnlyBtn = document.getElementById('pencilOnlyBtn');
+  const imageBtn = document.getElementById('imageBtn');
+  const imageInput = document.getElementById('imageInput');
 
   function setStatus(text) { status.textContent = text; }
 
@@ -114,9 +120,12 @@
   function fitCanvasResolution() {
     const rect = canvas.parentElement.getBoundingClientRect();
     const ratio = window.devicePixelRatio || 1;
-    canvas.width = Math.max(1, Math.round(rect.width * ratio));
-    canvas.height = Math.max(1, Math.round(rect.height * ratio));
+    const w = Math.max(1, Math.round(rect.width * ratio));
+    const h = Math.max(1, Math.round(rect.height * ratio));
+    canvas.width = w; canvas.height = h;
+    bgCanvas.width = w; bgCanvas.height = h;
     ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    bgCtx.setTransform(ratio, 0, 0, ratio, 0, 0);
     logicalWidth = rect.width;
     logicalHeight = rect.height;
   }
@@ -125,40 +134,69 @@
   // Punkte werden als Bruchteil (0..1) der Seitenbreite/-höhe gespeichert, damit
   // sich alles beim Drehen/Skalieren des iPads sauber neu einpasst.
   function px(pt) { return { x: pt.x * logicalWidth, y: pt.y * logicalHeight, w: pt.w }; }
+  function midpoint(a, b) { return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; }
 
+  // Jedes Segment wird als quadratische Kurve durch die Mittelpunkte der
+  // Nachbarpunkte gezeichnet (statt gerader Linien) -> glatte Linien statt
+  // kantiger Vielecke. Anfang/Ende jeder Kurve knüpfen nahtlos an die
+  // Nachbarsegmente an, weil sie denselben Mittelpunkt teilen.
   function drawSegment(g, stroke, i) {
-    const p0 = px(stroke.points[i - 1]), p1 = px(stroke.points[i]);
+    const pts = stroke.points;
+    const P = (j) => px(pts[j]);
+    const control = P(i - 1);
+    const start = i >= 2 ? midpoint(P(i - 2), control) : control;
+    const end = i <= pts.length - 2 ? midpoint(control, P(i)) : P(i);
+    const w = P(i).w || stroke.width;
+
     g.lineCap = 'round';
     g.lineJoin = 'round';
     g.strokeStyle = stroke.color;
 
     if (stroke.tool === 'pencil') {
+      const dx = end.x - start.x, dy = end.y - start.y;
+      const len = Math.hypot(dx, dy) || 1;
+      const nx = -dy / len, ny = dx / len;
       const layers = 3;
       for (let L = 0; L < layers; L++) {
         const seed = hash01(stroke.id + ':' + i + ':' + L);
         const jitter = (seed - 0.5) * 1.4;
-        const dx = p1.x - p0.x, dy = p1.y - p0.y;
-        const len = Math.hypot(dx, dy) || 1;
-        const nx = -dy / len, ny = dx / len;
         g.globalAlpha = (stroke.opacity || 0.55) * 0.45;
-        g.lineWidth = (p1.w || stroke.width) * (0.55 + seed * 0.6);
+        g.lineWidth = w * (0.55 + seed * 0.6);
         g.beginPath();
-        g.moveTo(p0.x + nx * jitter, p0.y + ny * jitter);
-        g.lineTo(p1.x + nx * jitter, p1.y + ny * jitter);
+        g.moveTo(start.x + nx * jitter, start.y + ny * jitter);
+        g.quadraticCurveTo(control.x + nx * jitter, control.y + ny * jitter, end.x + nx * jitter, end.y + ny * jitter);
         g.stroke();
       }
     } else {
       g.globalAlpha = stroke.opacity == null ? 1 : stroke.opacity;
-      g.lineWidth = p1.w || stroke.width;
+      g.lineWidth = w;
       g.beginPath();
-      g.moveTo(p0.x, p0.y);
-      g.lineTo(p1.x, p1.y);
+      g.moveTo(start.x, start.y);
+      g.quadraticCurveTo(control.x, control.y, end.x, end.y);
       g.stroke();
     }
     g.globalAlpha = 1;
   }
 
+  // Bilder (Foto/Scan-Import) werden im selben strokes-Array wie Tinte
+  // gespeichert, damit Reihenfolge/Undo/Redo einheitlich funktionieren.
+  const imageCache = new Map(); // stroke.id -> HTMLImageElement
+
+  function drawImageStroke(g, stroke) {
+    let img = imageCache.get(stroke.id);
+    if (!img) {
+      img = new Image();
+      img.onload = () => redrawCurrentPage();
+      img.src = stroke.src;
+      imageCache.set(stroke.id, img);
+    }
+    if (img.complete && img.naturalWidth) {
+      g.drawImage(img, stroke.x * logicalWidth, stroke.y * logicalHeight, stroke.w * logicalWidth, stroke.h * logicalHeight);
+    }
+  }
+
   function renderStroke(g, stroke) {
+    if (stroke.tool === 'image') { drawImageStroke(g, stroke); return; }
     const pts = stroke.points;
     if (!pts.length) return;
     g.save();
@@ -219,18 +257,27 @@
     fitCanvasResolution();
     if (!nb || !page) { emptyState.hidden = false; return; }
     emptyState.hidden = true;
-    drawBackground(ctx, nb.background);
+    drawBackground(bgCtx, nb.background);
+    ctx.clearRect(0, 0, logicalWidth, logicalHeight);
     for (const stroke of page.strokes) renderStroke(ctx, stroke);
+  }
+
+  // Für Thumbnail/Export müssen Seitenmuster-Ebene und Tinten-Ebene
+  // zusammen auf eine Offscreen-Canvas gezeichnet werden.
+  function compositeToCanvas(w, h) {
+    const off = document.createElement('canvas');
+    off.width = w; off.height = h;
+    const octx = off.getContext('2d');
+    octx.drawImage(bgCanvas, 0, 0, w, h);
+    octx.drawImage(canvas, 0, 0, w, h);
+    return off;
   }
 
   function regenerateThumb() {
     const page = currentPage();
     if (!page) return;
-    const off = document.createElement('canvas');
     const w = 96, h = Math.max(1, Math.round(96 * (logicalHeight / logicalWidth || 1.3)));
-    off.width = w; off.height = h;
-    off.getContext('2d').drawImage(canvas, 0, 0, w, h);
-    page.thumb = off.toDataURL('image/png');
+    page.thumb = compositeToCanvas(w, h).toDataURL('image/png');
   }
 
   // ---------- Werkzeug-Status ----------
@@ -277,8 +324,13 @@
     return baseWidth * factor;
   }
 
+  function isAllowedPointer(e) {
+    if (!data.ui.pencilOnly) return true;
+    return e.pointerType === 'pen';
+  }
+
   function pointerDown(e) {
-    if (!currentPage()) return;
+    if (!currentPage() || !isAllowedPointer(e)) return;
     e.preventDefault();
     canvas.setPointerCapture && e.pointerId != null && canvas.setPointerCapture(e.pointerId);
     const cfg = TOOL_DEFAULTS[activeTool];
@@ -300,7 +352,7 @@
   }
 
   function pointerMove(e) {
-    if (!currentStroke) return;
+    if (!currentStroke || !isAllowedPointer(e)) return;
     e.preventDefault();
     const f = getFraction(e);
     const now = performance.now();
@@ -399,7 +451,7 @@
     saveData();
   });
   exportBtn.addEventListener('click', () => {
-    canvas.toBlob((blob) => {
+    compositeToCanvas(canvas.width, canvas.height).toBlob((blob) => {
       if (!blob) return;
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -608,6 +660,56 @@
     saveData();
   });
 
+  // ---------- Nur-Apple-Pencil-Umschalter ----------
+  function applyPencilOnlyUI() {
+    pencilOnlyBtn.classList.toggle('active', !!data.ui.pencilOnly);
+  }
+  pencilOnlyBtn.addEventListener('click', () => {
+    data.ui.pencilOnly = !data.ui.pencilOnly;
+    applyPencilOnlyUI();
+    saveData();
+  });
+
+  // ---------- Bild-/Scan-Import ----------
+  // Ein normaler <input type=file accept="image/*"> reicht: iPadOS bietet in
+  // seinem Auswahldialog von sich aus "Fotomediathek", "Foto aufnehmen" UND
+  // "Dokumente scannen" an, keine gesonderte API nötig.
+  imageBtn.addEventListener('click', () => {
+    if (!currentPage()) return;
+    imageInput.value = '';
+    imageInput.click();
+  });
+  imageInput.addEventListener('change', () => {
+    const file = imageInput.files && imageInput.files[0];
+    const page = currentPage();
+    if (!file || !page) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const probe = new Image();
+      probe.onload = () => {
+        const maxFracW = 0.85, maxFracH = 0.85;
+        const imgAspect = probe.naturalWidth / probe.naturalHeight;
+        const pageAspect = logicalWidth / logicalHeight;
+        let wFrac, hFrac;
+        if (imgAspect > pageAspect) { wFrac = maxFracW; hFrac = (wFrac * logicalWidth) / imgAspect / logicalHeight; }
+        else { hFrac = maxFracH; wFrac = (hFrac * logicalHeight) * imgAspect / logicalWidth; }
+        const stroke = {
+          id: uid(), tool: 'image', src: reader.result,
+          x: (1 - wFrac) / 2, y: (1 - hFrac) / 2, w: wFrac, h: hFrac
+        };
+        page.strokes.push(stroke);
+        redoStack = [];
+        updateUndoRedoButtons();
+        redrawCurrentPage();
+        regenerateThumb();
+        renderPageStrip();
+        saveData();
+      };
+      probe.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+
   // ---------- Sidebar öffnen/schließen ----------
   function openSidebar() { sidebar.hidden = false; sidebarBackdrop.hidden = false; renderSidebar(); }
   function closeSidebar() { sidebar.hidden = true; sidebarBackdrop.hidden = true; }
@@ -619,5 +721,6 @@
   window.addEventListener('resize', () => { redrawCurrentPage(); });
 
   applyToolUI();
+  applyPencilOnlyUI();
   openNotebook(data.ui.activeNotebookId);
 })();

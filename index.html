@@ -47,6 +47,9 @@
       <button class="swatch" data-color="#6a3fa0" style="background:#6a3fa0"></button>
     </div>
     <input type="range" id="widthSlider" min="1" max="7" step="0.2" value="2.6" title="Stiftstärke">
+    <button id="pencilOnlyBtn" class="icon-btn" title="Nur mit Apple Pencil zeichnen (Finger/Maus zum Zeichnen sperren)">✒️ Nur Pencil</button>
+    <button id="imageBtn" class="icon-btn" title="Bild oder Scan einfügen">🖼️ Bild</button>
+    <input type="file" id="imageInput" accept="image/*" hidden>
     <div class="spacer"></div>
     <button id="undoBtn" class="icon-btn" title="Rückgängig">↩︎</button>
     <button id="redoBtn" class="icon-btn" title="Wiederholen">↪︎</button>
@@ -62,6 +65,7 @@
   </div>
 
   <div id="canvasWrap">
+    <canvas id="bgBoard"></canvas>
     <canvas id="board"></canvas>
     <div id="status"></div>
     <div id="emptyState" hidden>Kein Notizbuch geöffnet – wähle eins im Menü ☰</div>

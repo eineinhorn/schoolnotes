@@ -61,6 +61,7 @@ button { font-family: inherit; }
 .swatch.active { border-color: #333; box-shadow: 0 0 0 2px var(--bar-bg); }
 #widthSlider { width: 80px; accent-color: #444; }
 body.tool-is-eraser #colorPicker, body.tool-is-eraser #quickColors { display: none; }
+#pencilOnlyBtn.active { background: #333; color: #fff; border-color: #333; }
 
 /* --- Page strip --- */
 #pageStrip {
@@ -81,7 +82,8 @@ body.tool-is-eraser #colorPicker, body.tool-is-eraser #quickColors { display: no
 
 /* --- Canvas area --- */
 #canvasWrap { flex: 1; position: relative; touch-action: none; overflow: hidden; background: var(--bg); }
-canvas#board { position: absolute; inset: 0; width: 100%; height: 100%; background: var(--paper); display: block; }
+canvas#bgBoard { position: absolute; inset: 0; width: 100%; height: 100%; background: var(--paper); display: block; }
+canvas#board { position: absolute; inset: 0; width: 100%; height: 100%; background: transparent; display: block; }
 #status {
   position: absolute; bottom: 8px; right: 10px; font-size: 11px; color: #999;
   pointer-events: none; -webkit-user-select: none; user-select: none;
