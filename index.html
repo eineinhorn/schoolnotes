@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>Schulnotizen</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<style>
+  :root {
+    --bg: #f5f2ea;
+    --toolbar-bg: #ffffff;
+    --ink: #2b2b2b;
+    --border: #ddd6c8;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    overflow: hidden;
+    background: var(--bg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color: var(--ink);
+  }
+  #app {
+    display: flex;
+    flex-direction: column;
+    height: 100dvh;
+    height: 100vh;
+  }
+  #toolbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: env(safe-area-inset-top, 8px) 10px 8px 10px;
+    background: var(--toolbar-bg);
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  #toolbar h1 {
+    font-size: 15px;
+    font-weight: 600;
+    margin: 0 6px 0 4px;
+    white-space: nowrap;
+  }
+  .swatch {
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    border: 2px solid transparent;
+    cursor: pointer;
+    padding: 0;
+  }
+  .swatch.active {
+    border-color: #333;
+    box-shadow: 0 0 0 2px var(--toolbar-bg);
+  }
+  #size {
+    width: 70px;
+    accent-color: #444;
+  }
+  button.tool {
+    border: 1px solid var(--border);
+    background: #faf8f2;
+    border-radius: 8px;
+    padding: 6px 10px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  button.tool.active {
+    background: #333;
+    color: #fff;
+    border-color: #333;
+  }
+  #spacer { flex: 1; }
+  #canvasWrap {
+    flex: 1;
+    position: relative;
+    touch-action: none;
+    overflow: hidden;
+  }
+  canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    background: #fffdf7;
+    display: block;
+  }
+  #status {
+    position: absolute;
+    bottom: 8px;
+    right: 10px;
+    font-size: 11px;
+    color: #999;
+    pointer-events: none;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="toolbar">
+    <h1>✏️ Notizen</h1>
+    <button class="swatch active" data-color="#2b2b2b" style="background:#2b2b2b"></button>
+    <button class="swatch" data-color="#d1453b" style="background:#d1453b"></button>
+    <button class="swatch" data-color="#2f6fed" style="background:#2f6fed"></button>
+    <button class="swatch" data-color="#2e9e5b" style="background:#2e9e5b"></button>
+    <button class="swatch" data-color="#e6a817" style="background:#e6a817"></button>
+    <input type="range" id="size" min="1" max="20" value="3">
+    <button class="tool" id="eraserBtn">🩹 Radierer</button>
+    <div id="spacer"></div>
+    <button class="tool" id="undoBtn">↩︎ Rückgängig</button>
+    <button class="tool" id="clearBtn">🗑 Leeren</button>
+  </div>
+  <div id="canvasWrap">
+    <canvas id="board"></canvas>
+    <div id="status">wird gespeichert…</div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const canvas = document.getElementById('board');
+  const ctx = canvas.getContext('2d');
+  const status = document.getElementById('status');
+  const sizeInput = document.getElementById('size');
+  const eraserBtn = document.getElementById('eraserBtn');
+  const undoBtn = document.getElementById('undoBtn');
+  const clearBtn = document.getElementById('clearBtn');
+  const swatches = document.querySelectorAll('.swatch');
+
+  const STORAGE_KEY = 'schulnotizen.board.v1';
+  const HISTORY_LIMIT = 30;
+
+  let color = '#2b2b2b';
+  let lineWidth = 3;
+  let erasing = false;
+  let drawing = false;
+  let lastX = 0, lastY = 0;
+  let history = [];
+  let saveTimer = null;
+
+  function dpr() { return window.devicePixelRatio || 1; }
+
+  function resizeCanvas(preserve) {
+    const wrap = canvas.parentElement;
+    const ratio = dpr();
+    const prevImage = preserve ? ctx.getImageData(0, 0, canvas.width, canvas.height) : null;
+    const prevW = canvas.width, prevH = canvas.height;
+
+    canvas.width = Math.round(wrap.clientWidth * ratio);
+    canvas.height = Math.round(wrap.clientHeight * ratio);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = '#fffdf7';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    if (prevImage) {
+      // best-effort: draw the old bitmap back in (top-left aligned)
+      const tmp = document.createElement('canvas');
+      tmp.width = prevW; tmp.height = prevH;
+      tmp.getContext('2d').putImageData(prevImage, 0, 0);
+      ctx.drawImage(tmp, 0, 0);
+    }
+  }
+
+  function pos(e) {
+    const rect = canvas.getBoundingClientRect();
+    const ratio = dpr();
+    const point = e.touches ? e.touches[0] : e;
+    return {
+      x: (point.clientX - rect.left) * ratio,
+      y: (point.clientY - rect.top) * ratio
+    };
+  }
+
+  function pushHistory() {
+    try {
+      history.push(canvas.toDataURL('image/png'));
+      if (history.length > HISTORY_LIMIT) history.shift();
+    } catch (e) { /* ignore */ }
+  }
+
+  function startStroke(e) {
+    e.preventDefault();
+    pushHistory();
+    drawing = true;
+    const p = pos(e);
+    lastX = p.x; lastY = p.y;
+    // draw a dot for taps
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, (lineWidth * dpr()) / 2, 0, Math.PI * 2);
+    ctx.fillStyle = erasing ? '#fffdf7' : color;
+    ctx.fill();
+  }
+
+  function moveStroke(e) {
+    if (!drawing) return;
+    e.preventDefault();
+    const p = pos(e);
+    ctx.beginPath();
+    ctx.moveTo(lastX, lastY);
+    ctx.lineTo(p.x, p.y);
+    ctx.strokeStyle = erasing ? '#fffdf7' : color;
+    ctx.lineWidth = lineWidth * dpr();
+    ctx.stroke();
+    lastX = p.x; lastY = p.y;
+  }
+
+  function endStroke(e) {
+    if (!drawing) return;
+    drawing = false;
+    scheduleSave();
+  }
+
+  function scheduleSave() {
+    status.textContent = 'speichere…';
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      try {
+        localStorage.setItem(STORAGE_KEY, canvas.toDataURL('image/png'));
+        status.textContent = 'gespeichert ✓';
+      } catch (e) {
+        status.textContent = 'Speichern fehlgeschlagen';
+      }
+    }, 250);
+  }
+
+  function loadSaved() {
+    const data = localStorage.getItem(STORAGE_KEY);
+    if (!data) { status.textContent = 'neues Blatt'; return; }
+    const img = new Image();
+    img.onload = function () {
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      status.textContent = 'geladen ✓';
+    };
+    img.src = data;
+  }
+
+  function undo() {
+    const last = history.pop();
+    if (!last) return;
+    const img = new Image();
+    img.onload = function () {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.fillStyle = '#fffdf7';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0);
+      scheduleSave();
+    };
+    img.src = last;
+  }
+
+  function clearBoard() {
+    if (!confirm('Wirklich alles löschen?')) return;
+    pushHistory();
+    ctx.fillStyle = '#fffdf7';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    scheduleSave();
+  }
+
+  // events — pointer events cover mouse, touch and Apple Pencil in one go
+  canvas.addEventListener('pointerdown', startStroke);
+  canvas.addEventListener('pointermove', moveStroke);
+  window.addEventListener('pointerup', endStroke);
+  window.addEventListener('pointercancel', endStroke);
+
+  sizeInput.addEventListener('input', () => { lineWidth = Number(sizeInput.value); });
+
+  swatches.forEach(btn => {
+    btn.addEventListener('click', () => {
+      swatches.forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      color = btn.dataset.color;
+      erasing = false;
+      eraserBtn.classList.remove('active');
+    });
+  });
+
+  eraserBtn.addEventListener('click', () => {
+    erasing = !erasing;
+    eraserBtn.classList.toggle('active', erasing);
+  });
+
+  undoBtn.addEventListener('click', undo);
+  clearBtn.addEventListener('click', clearBoard);
+
+  window.addEventListener('resize', () => resizeCanvas(true));
+
+  resizeCanvas(false);
+  loadSaved();
+})();
+</script>
+</body>
+</html>

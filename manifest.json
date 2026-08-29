@@ -1,0 +1,12 @@
+{
+  "name": "Schulnotizen",
+  "short_name": "Notizen",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f5f2ea",
+  "theme_color": "#fffdf7",
+  "icons": [
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
