@@ -34,6 +34,7 @@
       <button class="tool-btn" data-tool="pencil" title="Bleistift">✏️</button>
       <button class="tool-btn" data-tool="marker" title="Marker">🖍️</button>
       <button class="tool-btn" data-tool="eraser" title="Radiergummi">🩹</button>
+      <button class="tool-btn" data-tool="select" title="Bilder auswählen, verschieben &amp; skalieren">✋</button>
     </div>
     <input type="color" id="colorPicker" value="#1c2b4a" title="Farbe wählen">
     <div id="quickColors">
@@ -53,6 +54,7 @@
     <div class="spacer"></div>
     <button id="undoBtn" class="icon-btn" title="Rückgängig">↩︎</button>
     <button id="redoBtn" class="icon-btn" title="Wiederholen">↪︎</button>
+    <button id="deleteImageBtn" class="icon-btn" title="Ausgewähltes Bild löschen" hidden>🗑 Bild</button>
     <button id="clearBtn" class="icon-btn" title="Seite leeren">🗑</button>
   </div>
 
@@ -65,10 +67,14 @@
   </div>
 
   <div id="canvasWrap">
-    <canvas id="bgBoard"></canvas>
-    <canvas id="board"></canvas>
+    <div id="zoomWrap">
+      <canvas id="bgBoard"></canvas>
+      <canvas id="board"></canvas>
+      <canvas id="overlayBoard"></canvas>
+    </div>
     <div id="status"></div>
     <div id="emptyState" hidden>Kein Notizbuch geöffnet – wähle eins im Menü ☰</div>
+    <button id="resetZoomBtn" class="icon-btn" hidden>🔍 100%</button>
   </div>
 
   <div id="sidebarBackdrop" hidden></div>

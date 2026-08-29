@@ -80,6 +80,8 @@
   const ctx = canvas.getContext('2d');
   const bgCanvas = document.getElementById('bgBoard');        // Seitenmuster-Ebene (darunter, vom Radiergummi unberührt)
   const bgCtx = bgCanvas.getContext('2d');
+  const overlayCanvas = document.getElementById('overlayBoard'); // nur Auswahl-Rahmen/Griff, nie gespeichert/exportiert
+  const overlayCtx = overlayCanvas.getContext('2d');
   const status = document.getElementById('status');
   const emptyState = document.getElementById('emptyState');
   const notebookTitle = document.getElementById('notebookTitle');
@@ -107,6 +109,10 @@
   const pencilOnlyBtn = document.getElementById('pencilOnlyBtn');
   const imageBtn = document.getElementById('imageBtn');
   const imageInput = document.getElementById('imageInput');
+  const deleteImageBtn = document.getElementById('deleteImageBtn');
+  const canvasWrap = document.getElementById('canvasWrap');
+  const zoomWrap = document.getElementById('zoomWrap');
+  const resetZoomBtn = document.getElementById('resetZoomBtn');
 
   function setStatus(text) { status.textContent = text; }
 
@@ -124,8 +130,10 @@
     const h = Math.max(1, Math.round(rect.height * ratio));
     canvas.width = w; canvas.height = h;
     bgCanvas.width = w; bgCanvas.height = h;
+    overlayCanvas.width = w; overlayCanvas.height = h;
     ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
     bgCtx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    overlayCtx.setTransform(ratio, 0, 0, ratio, 0, 0);
     logicalWidth = rect.width;
     logicalHeight = rect.height;
   }
@@ -260,6 +268,7 @@
     drawBackground(bgCtx, nb.background);
     ctx.clearRect(0, 0, logicalWidth, logicalHeight);
     for (const stroke of page.strokes) renderStroke(ctx, stroke);
+    redrawOverlay();
   }
 
   // Für Thumbnail/Export müssen Seitenmuster-Ebene und Tinten-Ebene
@@ -285,9 +294,11 @@
   let redoStack = [];
 
   function applyToolUI() {
-    const cfg = TOOL_DEFAULTS[activeTool];
     toolButtons.forEach(b => b.classList.toggle('active', b.dataset.tool === activeTool));
     document.body.classList.toggle('tool-is-eraser', activeTool === 'eraser');
+    document.body.classList.toggle('tool-is-select', activeTool === 'select');
+    const cfg = TOOL_DEFAULTS[activeTool];
+    if (!cfg) return; // 'select' ist kein Zeichenwerkzeug, hat keine Farbe/Stärke
     widthSlider.min = cfg.min; widthSlider.max = cfg.max;
     widthSlider.value = data.tools ? data.tools[activeTool].width : cfg.width;
     colorPicker.value = data.tools[activeTool].color;
@@ -329,7 +340,138 @@
     return e.pointerType === 'pen';
   }
 
+  // ---------- Bilder auswählen, verschieben & skalieren ----------
+  // Bewusst NICHT durch "Nur Pencil" eingeschränkt: Bilder zurechtrücken ist
+  // keine Schreibhandlung, das macht man auf einem iPad typischerweise mit
+  // dem Finger, so wie in anderen Notiz-Apps auch.
+  let selectedImageId = null;
+  let dragMode = null; // null | 'move' | 'resize'
+  let dragStart = null;
+  const RESIZE_HANDLE_PX = 22;
+
+  function imagesOnPage() {
+    const page = currentPage();
+    return page ? page.strokes.filter(s => s.tool === 'image') : [];
+  }
+  function selectedImage() {
+    if (!selectedImageId) return null;
+    return imagesOnPage().find(im => im.id === selectedImageId) || null;
+  }
+  function hitTestImage(fx, fy) {
+    const imgs = imagesOnPage();
+    for (let i = imgs.length - 1; i >= 0; i--) {
+      const im = imgs[i];
+      if (fx >= im.x && fx <= im.x + im.w && fy >= im.y && fy <= im.y + im.h) return im;
+    }
+    return null;
+  }
+  function handleHit(im, fx, fy) {
+    if (!im) return false;
+    const hx = (im.x + im.w) * logicalWidth, hy = (im.y + im.h) * logicalHeight;
+    return Math.hypot(fx * logicalWidth - hx, fy * logicalHeight - hy) <= RESIZE_HANDLE_PX;
+  }
+  function clampImage(im) {
+    const minVisible = 40; // logische px, die mindestens sichtbar bleiben müssen
+    im.x = Math.min(1 - minVisible / logicalWidth, Math.max(-im.w + minVisible / logicalWidth, im.x));
+    im.y = Math.min(1 - minVisible / logicalHeight, Math.max(-im.h + minVisible / logicalHeight, im.y));
+  }
+  function deselectImage() {
+    selectedImageId = null;
+    dragMode = null;
+    updateImageSelectionUI();
+  }
+  function updateImageSelectionUI() { deleteImageBtn.hidden = !selectedImageId; }
+
+  function drawSelectionOverlay() {
+    const im = selectedImage();
+    if (!im) return;
+    const x = im.x * logicalWidth, y = im.y * logicalHeight, w = im.w * logicalWidth, h = im.h * logicalHeight;
+    overlayCtx.save();
+    overlayCtx.strokeStyle = '#2f6fed';
+    overlayCtx.lineWidth = 1.5;
+    overlayCtx.setLineDash([6, 4]);
+    overlayCtx.strokeRect(x, y, w, h);
+    overlayCtx.setLineDash([]);
+    overlayCtx.beginPath();
+    overlayCtx.arc(x + w, y + h, 9, 0, Math.PI * 2);
+    overlayCtx.fillStyle = '#2f6fed';
+    overlayCtx.fill();
+    overlayCtx.lineWidth = 2;
+    overlayCtx.strokeStyle = '#fff';
+    overlayCtx.stroke();
+    overlayCtx.restore();
+  }
+  function redrawOverlay() {
+    overlayCtx.clearRect(0, 0, logicalWidth, logicalHeight);
+    drawSelectionOverlay();
+  }
+
+  function selectPointerDown(e) {
+    e.preventDefault();
+    const f = getFraction(e);
+    const cur = selectedImage();
+    if (cur && handleHit(cur, f.x, f.y)) {
+      dragMode = 'resize';
+      dragStart = { fx: f.x, fy: f.y, img: { x: cur.x, y: cur.y, w: cur.w, h: cur.h } };
+      return;
+    }
+    const hit = hitTestImage(f.x, f.y);
+    if (hit) {
+      selectedImageId = hit.id;
+      dragMode = 'move';
+      dragStart = { fx: f.x, fy: f.y, img: { x: hit.x, y: hit.y, w: hit.w, h: hit.h } };
+    } else {
+      deselectImage();
+    }
+    updateImageSelectionUI();
+    redrawOverlay();
+  }
+  function selectPointerMove(e) {
+    if (!dragMode) return;
+    e.preventDefault();
+    const f = getFraction(e);
+    const im = selectedImage();
+    if (!im) return;
+    const dx = f.x - dragStart.fx, dy = f.y - dragStart.fy;
+    if (dragMode === 'move') {
+      im.x = dragStart.img.x + dx;
+      im.y = dragStart.img.y + dy;
+      clampImage(im);
+    } else if (dragMode === 'resize') {
+      const minFrac = 0.05;
+      const aspect = (dragStart.img.w * logicalWidth) / (dragStart.img.h * logicalHeight);
+      let newW = Math.max(minFrac, dragStart.img.w + dx);
+      let newH = (newW * logicalWidth) / aspect / logicalHeight;
+      if (newH < minFrac) { newH = minFrac; newW = (newH * logicalHeight * aspect) / logicalWidth; }
+      im.w = newW; im.h = newH;
+    }
+    redrawCurrentPage();
+  }
+  function selectPointerUp() {
+    if (!dragMode) return;
+    dragMode = null;
+    regenerateThumb();
+    renderPageStrip();
+    saveData();
+  }
+
+  deleteImageBtn.addEventListener('click', () => {
+    const page = currentPage();
+    const im = selectedImage();
+    if (!page || !im) return;
+    if (!confirm('Bild wirklich löschen?')) return;
+    page.strokes = page.strokes.filter(s => s.id !== im.id);
+    deselectImage();
+    redoStack = [];
+    updateUndoRedoButtons();
+    redrawCurrentPage();
+    regenerateThumb();
+    renderPageStrip();
+    saveData();
+  });
+
   function pointerDown(e) {
+    if (activeTool === 'select') { selectPointerDown(e); return; }
     if (!currentPage() || !isAllowedPointer(e)) return;
     e.preventDefault();
     canvas.setPointerCapture && e.pointerId != null && canvas.setPointerCapture(e.pointerId);
@@ -352,6 +494,7 @@
   }
 
   function pointerMove(e) {
+    if (activeTool === 'select') { selectPointerMove(e); return; }
     if (!currentStroke || !isAllowedPointer(e)) return;
     e.preventDefault();
     const f = getFraction(e);
@@ -369,6 +512,7 @@
   }
 
   function pointerUp(e) {
+    if (dragMode) { selectPointerUp(); return; }
     if (!currentStroke) return;
     const page = currentPage();
     if (page && currentStroke.points.length) {
@@ -393,7 +537,12 @@
 
   // ---------- Werkzeugleiste ----------
   toolButtons.forEach(btn => {
-    btn.addEventListener('click', () => { activeTool = btn.dataset.tool; applyToolUI(); });
+    btn.addEventListener('click', () => {
+      activeTool = btn.dataset.tool;
+      if (activeTool !== 'select') deselectImage();
+      applyToolUI();
+      redrawOverlay();
+    });
   });
   colorPicker.addEventListener('input', () => {
     data.tools[activeTool].color = colorPicker.value;
@@ -496,6 +645,8 @@
     if (!data.pages[pageId]) return;
     data.ui.activePageId = pageId;
     redoStack = [];
+    deselectImage();
+    resetZoom();
     redrawCurrentPage();
     renderPageStrip();
     updateUndoRedoButtons();
@@ -539,6 +690,8 @@
     data.ui.activeNotebookId = id;
     data.ui.activePageId = nb.pageIds[0];
     redoStack = [];
+    deselectImage();
+    resetZoom();
     bgSelect.value = nb.background;
     const folder = nb.folderId ? findFolder(nb.folderId) : null;
     notebookTitle.innerHTML = (folder ? `<small>${escapeHtml(folder.name)}</small>` : '') + escapeHtml(nb.name);
@@ -700,6 +853,12 @@
         page.strokes.push(stroke);
         redoStack = [];
         updateUndoRedoButtons();
+        // direkt zum Verschieben/Skalieren-Werkzeug wechseln und das neue
+        // Bild auswählen, damit die Griffe sofort sichtbar sind
+        activeTool = 'select';
+        applyToolUI();
+        selectedImageId = stroke.id;
+        updateImageSelectionUI();
         redrawCurrentPage();
         regenerateThumb();
         renderPageStrip();
@@ -709,6 +868,77 @@
     };
     reader.readAsDataURL(file);
   });
+
+  // ---------- Zwei-Finger-Pinch-Zoom auf der Zeichenfläche ----------
+  // Rein visuell (CSS-Transform auf einer Wrapper-Ebene um die Canvases),
+  // rührt die gespeicherten Vektordaten nicht an. Funktioniert unabhängig
+  // von "Nur Pencil", weil Zoomen kein Schreiben ist. Wirkt sich auf
+  // getBoundingClientRect() der Canvases aus, wodurch Zeichnen/Auswählen
+  // beim gezoomten Zustand automatisch weiter an der richtigen Stelle
+  // landet, ganz ohne Änderungen an der Zeichen-Logik.
+  let zoomScale = 1, zoomX = 0, zoomY = 0;
+  let pinch = null; // { startDist, startScale, startMidX, startMidY, startZoomX, startZoomY }
+
+  function touchDist(a, b) { return Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY); }
+  function touchMid(a, b, rect) {
+    return { x: (a.clientX + b.clientX) / 2 - rect.left, y: (a.clientY + b.clientY) / 2 - rect.top };
+  }
+
+  function applyZoomTransform() {
+    zoomWrap.style.transform = `translate(${zoomX}px, ${zoomY}px) scale(${zoomScale})`;
+    resetZoomBtn.hidden = zoomScale <= 1.001;
+  }
+
+  function clampZoomPan() {
+    zoomScale = Math.min(4, Math.max(1, zoomScale));
+    const minX = logicalWidth * (1 - zoomScale), minY = logicalHeight * (1 - zoomScale);
+    zoomX = Math.min(0, Math.max(minX, zoomX));
+    zoomY = Math.min(0, Math.max(minY, zoomY));
+  }
+
+  function resetZoom() {
+    zoomScale = 1; zoomX = 0; zoomY = 0;
+    applyZoomTransform();
+  }
+  resetZoomBtn.addEventListener('click', resetZoom);
+
+  canvasWrap.addEventListener('touchstart', (e) => {
+    if (e.touches.length === 2) {
+      // Ein evtl. laufender Ein-Finger/Pencil-Strich oder Bild-Drag wird abgebrochen
+      currentStroke = null;
+      dragMode = null;
+      const rect = canvasWrap.getBoundingClientRect();
+      const [a, b] = e.touches;
+      pinch = {
+        startDist: touchDist(a, b),
+        startScale: zoomScale,
+        startMid: touchMid(a, b, rect),
+        startZoomX: zoomX, startZoomY: zoomY
+      };
+    }
+  }, { passive: true });
+
+  canvasWrap.addEventListener('touchmove', (e) => {
+    if (e.touches.length === 2 && pinch) {
+      e.preventDefault();
+      const rect = canvasWrap.getBoundingClientRect();
+      const [a, b] = e.touches;
+      const newDist = touchDist(a, b);
+      const newMid = touchMid(a, b, rect);
+      const rawScale = pinch.startScale * (newDist / Math.max(pinch.startDist, 1));
+      zoomScale = Math.min(4, Math.max(1, rawScale));
+      const factor = zoomScale / pinch.startScale;
+      zoomX = newMid.x - factor * (pinch.startMid.x - pinch.startZoomX);
+      zoomY = newMid.y - factor * (pinch.startMid.y - pinch.startZoomY);
+      clampZoomPan();
+      applyZoomTransform();
+    }
+  }, { passive: false });
+
+  canvasWrap.addEventListener('touchend', (e) => {
+    if (e.touches.length < 2) pinch = null;
+  });
+  canvasWrap.addEventListener('touchcancel', () => { pinch = null; });
 
   // ---------- Sidebar öffnen/schließen ----------
   function openSidebar() { sidebar.hidden = false; sidebarBackdrop.hidden = false; renderSidebar(); }

@@ -15,7 +15,10 @@ html, body {
   color: var(--ink);
 }
 button { font-family: inherit; }
-#app { display: flex; flex-direction: column; height: 100dvh; height: 100vh; }
+#app {
+  display: flex; flex-direction: column; height: 100dvh; height: 100vh;
+  -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+}
 
 /* --- Topbar --- */
 #topbar {
@@ -61,6 +64,7 @@ button { font-family: inherit; }
 .swatch.active { border-color: #333; box-shadow: 0 0 0 2px var(--bar-bg); }
 #widthSlider { width: 80px; accent-color: #444; }
 body.tool-is-eraser #colorPicker, body.tool-is-eraser #quickColors { display: none; }
+body.tool-is-select #colorPicker, body.tool-is-select #quickColors, body.tool-is-select #widthSlider { display: none; }
 #pencilOnlyBtn.active { background: #333; color: #fff; border-color: #333; }
 
 /* --- Page strip --- */
@@ -82,8 +86,11 @@ body.tool-is-eraser #colorPicker, body.tool-is-eraser #quickColors { display: no
 
 /* --- Canvas area --- */
 #canvasWrap { flex: 1; position: relative; touch-action: none; overflow: hidden; background: var(--bg); }
+#zoomWrap { position: absolute; inset: 0; transform-origin: 0 0; }
 canvas#bgBoard { position: absolute; inset: 0; width: 100%; height: 100%; background: var(--paper); display: block; }
 canvas#board { position: absolute; inset: 0; width: 100%; height: 100%; background: transparent; display: block; }
+canvas#overlayBoard { position: absolute; inset: 0; width: 100%; height: 100%; background: transparent; display: block; pointer-events: none; }
+#resetZoomBtn { position: absolute; left: 10px; bottom: 8px; opacity: 0.9; }
 #status {
   position: absolute; bottom: 8px; right: 10px; font-size: 11px; color: #999;
   pointer-events: none; -webkit-user-select: none; user-select: none;
